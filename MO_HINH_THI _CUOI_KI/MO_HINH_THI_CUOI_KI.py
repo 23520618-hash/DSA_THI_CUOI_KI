@@ -1,0 +1,191 @@
+import pandas as pd
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+import matplotlib.pyplot as plt
+
+# ==========================================
+# PHẦN 1: ĐỌC VÀ TIỀN XỬ LÝ DỮ LIỆU
+# ==========================================
+def load_and_preprocess_data(file_path):
+    print("1. Đang tải và xử lý dữ liệu...")
+    # Đọc file excel
+    df = pd.read_excel(file_path)
+
+    # Giữ lại 2 cột cần thiết và loại bỏ các dòng có giá trị bị thiếu (NaN)
+    df = df[['midterm', 'final']].dropna()
+
+    # Loại bỏ các giá trị bất thường (Outliers - giả sử điểm thang 10)
+    df = df[(df['midterm'] >= 0) & (df['midterm'] <= 10)]
+    df = df[(df['final'] >= 0) & (df['final'] <= 10)]
+
+    X = df[['midterm']].values
+    y = df[['final']].values
+
+    # Chia dữ liệu: Tỷ lệ phổ biến là 70% Train, 15% Dev (Validation), 15% Test
+    # Bước 1: Tách 70% Train, 30% cho phần còn lại
+    X_train, X_temp, y_train, y_temp = train_test_split(X, y, test_size=0.3, random_state=42)
+    # Bước 2: Chia đôi phần 30% còn lại thành 15% Dev và 15% Test
+    X_dev, X_test, y_dev, y_test = train_test_split(X_temp, y_temp, test_size=0.5, random_state=42)
+
+    # Chuẩn hóa dữ liệu (Standardization): (X - mean) / std
+    # Việc này giúp Gradient Descent hội tụ nhanh và ổn định hơn rất nhiều
+    scaler_X = StandardScaler()
+    X_train_scaled = scaler_X.fit_transform(X_train)
+    X_dev_scaled = scaler_X.transform(X_dev)
+    X_test_scaled = scaler_X.transform(X_test)
+
+    # Chuyển đổi Numpy arrays sang PyTorch Tensors
+    dataset = {
+        'train': (torch.tensor(X_train_scaled, dtype=torch.float32), torch.tensor(y_train, dtype=torch.float32)),
+        'dev': (torch.tensor(X_dev_scaled, dtype=torch.float32), torch.tensor(y_dev, dtype=torch.float32)),
+        'test': (torch.tensor(X_test_scaled, dtype=torch.float32), torch.tensor(y_test, dtype=torch.float32)),
+        'scaler_X': scaler_X # Giữ lại scaler để dùng khi muốn dự đoán điểm mới
+    }
+
+    print(f"   Đã chia tập dữ liệu: {len(X_train)} Train | {len(X_dev)} Dev | {len(X_test)} Test")
+    return dataset
+
+# ==========================================
+# PHẦN 2: XÂY DỰNG MÔ HÌNH HỒI QUY TUYẾN TÍNH
+# ==========================================
+class LinearRegressionModel(nn.Module):
+    def __init__(self):
+        super(LinearRegressionModel, self).__init__()
+        # Tạo 1 layer tuyến tính y = wx + b (1 input feature, 1 output)
+        self.linear = nn.Linear(in_features=1, out_features=1)
+
+    def forward(self, x):
+        return self.linear(x)
+
+# ==========================================
+# PHẦN 3: QUÁ TRÌNH HUẤN LUYỆN (TRAINING)
+# ==========================================
+def train_model(model, dataset, learning_rate=0.01, epochs=1000):
+    print("\n2. Bắt đầu huấn luyện (Training)...")
+    X_train, y_train = dataset['train']
+    X_dev, y_dev = dataset['dev']
+
+    # Hàm mất mát (Loss function): Mean Squared Error (MSE) giống trong slide của bạn
+    criterion = nn.MSELoss()
+
+    # Trình tối ưu hóa: Stochastic Gradient Descent (SGD)
+    optimizer = optim.SGD(model.parameters(), lr=learning_rate)
+
+    train_losses = []
+    dev_losses = []
+
+    for epoch in range(epochs):
+        model.train() # Đặt mô hình ở chế độ huấn luyện
+
+        # 1. FORWARD PASS: Đưa dữ liệu qua đồ thị tính toán
+        y_pred = model(X_train)
+
+        # 2. CALCULATE LOSS: Tính sai số L = (y_pred - y)^2
+        loss = criterion(y_pred, y_train)
+
+        # 3. BACKWARD PASS: Xóa gradient cũ, tính đạo hàm ngược
+        optimizer.zero_grad()
+        loss.backward()
+
+        # 4. OPTIMIZE: Cập nhật trọng số w và b (w = w - learning_rate * w.grad)
+        optimizer.step()
+
+        # --- Đánh giá trên tập Dev (Validation) ---
+        model.eval() # Đặt mô hình ở chế độ đánh giá
+        with torch.no_grad(): # Không lưu Computational Graph để tiết kiệm bộ nhớ
+            dev_pred = model(X_dev)
+            dev_loss = criterion(dev_pred, y_dev)
+
+        train_losses.append(loss.item())
+        dev_losses.append(dev_loss.item())
+
+        if (epoch + 1) % 100 == 0:
+            print(f'   Epoch [{epoch+1}/{epochs}], Train Loss: {loss.item():.4f}, Dev Loss: {dev_loss.item():.4f}')
+
+    return train_losses, dev_losses
+
+# ==========================================
+# PHẦN 4: ĐÁNH GIÁ TRÊN TẬP TEST & TRỰC QUAN HÓA
+# ==========================================
+def evaluate_and_plot(model, dataset, train_losses, dev_losses):
+    print("\n3. Đánh giá mô hình trên tập Test...")
+    X_test, y_test = dataset['test']
+    scaler_X = dataset['scaler_X']
+
+    model.eval()
+    with torch.no_grad():
+        y_test_pred = model(X_test)
+        test_mse = nn.MSELoss()(y_test_pred, y_test)
+        print(f"   => Mean Squared Error (MSE) trên tập Test: {test_mse.item():.4f}")
+
+    # In ra trọng số học được (w và b)
+    w = model.linear.weight.item()
+    b = model.linear.bias.item()
+    print(f"   => Phương trình dự đoán (trên dữ liệu chuẩn hóa): y = {w:.4f} * x_scaled + {b:.4f}")
+
+    # Khôi phục dữ liệu gốc để vẽ đồ thị cho trực quan
+    X_test_original = scaler_X.inverse_transform(X_test.numpy())
+
+    # --- LƯU KẾT QUẢ VÀO FILE EXCEL ---
+    results_df = pd.DataFrame({
+        'midterm (Thực tế)': X_test_original.flatten(),
+        'final (Thực tế)': y_test.numpy().flatten(),
+        'final (Dự đoán)': y_test_pred.numpy().flatten()
+    })
+    predict_file_path = '/content/predict.xlsx'
+    results_df.to_excel(predict_file_path, index=False)
+    print(f"   => Đã lưu kết quả dự đoán chi tiết vào file '{predict_file_path}'")
+
+    # --- Vẽ biểu đồ (Đồ thị Loss và Đường dự đoán) ---
+    plt.figure(figsize=(12, 5))
+
+    # Biểu đồ 1: Loss qua các Epochs
+    plt.subplot(1, 2, 1)
+    plt.plot(train_losses, label='Train Loss')
+    plt.plot(dev_losses, label='Dev Loss')
+    plt.xlabel('Epochs')
+    plt.ylabel('Mean Squared Error (MSE)')
+    plt.title('Quá trình giảm Loss')
+    plt.legend()
+
+    # Biểu đồ 2: Dữ liệu thực tế vs Đường dự đoán
+    plt.subplot(1, 2, 2)
+    plt.scatter(X_test_original, y_test.numpy(), color='blue', label='Dữ liệu thực tế (Test)')
+    plt.plot(X_test_original, y_test_pred.numpy(), color='red', label='Đường Hồi quy (Dự đoán)')
+    plt.xlabel('Điểm Giữa Kỳ (Mid Term)')
+    plt.ylabel('Điểm Cuối Kỳ (Final)')
+    plt.title('Dự đoán Điểm Cuối Kỳ')
+    plt.legend()
+
+    plt.tight_layout()
+    plt.show()
+
+# ==========================================
+# CHẠY CHƯƠNG TRÌNH CHÍNH
+# ==========================================
+if __name__ == "__main__":
+    # 1. Đảm bảo bạn có file 'data.xlsx' trong cùng thư mục
+    FILE_PATH = '/content/TRAIN2.xlsx'
+
+    try:
+        # Load và tiền xử lý
+        my_dataset = load_and_preprocess_data(FILE_PATH)
+
+        # Khởi tạo mô hình
+        my_model = LinearRegressionModel()
+
+        # Huấn luyện
+        # Bạn có thể điều chỉnh learning_rate và epochs để xem hiệu suất thay đổi
+        t_losses, d_losses = train_model(my_model, my_dataset, learning_rate=0.01, epochs=500)
+
+        # Đánh giá và vẽ đồ thị
+        evaluate_and_plot(my_model, my_dataset, t_losses, d_losses)
+
+    except FileNotFoundError:
+        print(f"\n[LỖI]: Không tìm thấy file '{FILE_PATH}'. Vui lòng tạo file excel có tên này cùng thư mục với code.")
+    except KeyError as e:
+        print(f"\n[LỖI]: Không tìm thấy cột {e} trong file excel. Vui lòng kiểm tra lại tên cột ('mid term', 'final').")
